@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 
 class RAGPipeline:
+    """Retrieval-Augmented Generation pipeline for MedlinePlus data."""
+
     def __init__(
         self, xml_path: str, index_path="faiss_index.bin", doc_path="documents.json"
     ):
@@ -18,6 +20,7 @@ class RAGPipeline:
         self.index = None
         self.documents: List[Dict[str, Any]] = []
 
+        # Use caches FAISS index + docs if available, else build from scratch
         if os.path.exists(index_path) and os.path.exists(doc_path):
             print("Loading cached FAISS index and documents...")
             self._load_cache()
@@ -36,6 +39,7 @@ class RAGPipeline:
             if not (isinstance(node.tag, str) and node.tag.endswith("health-topic")):
                 continue
 
+            # extract title and summary
             title_el = node.find(".//title")
             title = (title_el.text or "").strip() if title_el is not None else ""
 
@@ -75,6 +79,7 @@ class RAGPipeline:
                 if url:
                     sources.append({"title": label, "url": url})
 
+            # remove duplicates
             seen = set()
             uniq_sources = []
             for src in sources:
@@ -90,6 +95,7 @@ class RAGPipeline:
                 uniq_sources.insert(0, {"title": title, "url": permalink})
                 seen.add(permalink)
 
+            # fallback
             if not uniq_sources:
                 fallback_url = permalink or "https://medlineplus.gov/healthtopics.html"
                 uniq_sources = [{"title": title or "MedlinePlus", "url": fallback_url}]
@@ -117,6 +123,7 @@ class RAGPipeline:
             texts, show_progress_bar=True, convert_to_numpy=True
         )
 
+        # FAISS index - L2 distance search
         dim = embeddings.shape[1]
         self.index = faiss.IndexFlatL2(dim)
         self.index.add(embeddings)
@@ -131,15 +138,13 @@ class RAGPipeline:
         with open(self.doc_path, "r", encoding="utf-8") as f:
             self.documents = json.load(f)
 
-    # ---------- QUERY ----------
-
     def query(
         self, query_text: str, top_k: int = 5, min_relevance: float = 0.6
     ) -> List[Dict[str, Any]]:
         if not query_text or self.index is None or not self.documents:
             return []
 
-        # Encode query and search
+        # Encode query and perform vector search
         query_embedding = self.model.encode([query_text], convert_to_numpy=True)
         D, I = self.index.search(query_embedding, top_k)
 
@@ -147,7 +152,7 @@ class RAGPipeline:
         if not dists:
             return []
 
-        # Normalize to 0–1 where 1 = best match
+        # Normalize distances to 0–1 relevance scores where 1 = best match
         dmin, dmax = min(dists), max(dists)
         denom = (dmax - dmin) if (dmax - dmin) > 1e-12 else 1.0
         relevances = [1.0 - ((d - dmin) / denom) for d in dists]

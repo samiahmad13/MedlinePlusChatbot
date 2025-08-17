@@ -10,6 +10,7 @@ import os
 
 load_dotenv()
 
+# configure OpenAI client via OpenRouter
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENAI_API_KEY"),
@@ -20,6 +21,7 @@ TITLE = "CuraLinkAI"
 
 app = FastAPI()
 
+# cross-origin requests
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,26 +33,34 @@ rag = RAGPipeline("/Users/samiahmad/Downloads/curalinkai/mplus_topics_2025-07-19
 
 
 class ChatMessage(BaseModel):
+    """Represents a single message in the chat history."""
+
     role: str
     content: str
 
 
 class ChatRequest(BaseModel):
+    """Schema for incoming chat requests from the frontend."""
+
     question: str
     chatHistory: List[ChatMessage]
 
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
+    # query RAG pipeline for relevant documents
     retrieved = rag.query(req.question) or []
 
+    # concatenate text for LLM context
     if retrieved:
         context_text = "\n\n".join(
             [doc.get("text", "") for doc in retrieved if doc.get("text")]
         )
     else:
+        # fallback
         context_text = "No retrieved RAG context was available. Answer the question using only general, safe medical knowledge and standard guidelines."
 
+    # construct message history for LLM
     messages = [
         {
             "role": "system",
@@ -58,12 +68,14 @@ async def chat(req: ChatRequest):
         }
     ]
 
+    # append history to maintain conversation flow
     for msg in req.chatHistory:
         role = "user" if msg.role in ["user", "human"] else "assistant"
         content = (msg.content or "").strip()
         if content:
             messages.append({"role": role, "content": content})
 
+    # call LLM
     try:
         completion = client.chat.completions.create(
             model="tngtech/deepseek-r1t2-chimera:free",
@@ -74,6 +86,7 @@ async def chat(req: ChatRequest):
         if completion and completion.choices:
             answer = completion.choices[0].message.content
         else:
+            # fallback
             print("LLM call returned no choices.")
             print("Raw response:", completion)
             answer = "Sorry, I encountered an issue calling the language model."
@@ -87,6 +100,7 @@ async def chat(req: ChatRequest):
                 pass
         answer = "Sorry, I encountered an issue calling the language model."
 
+    # Extract and return sources
     sources = [
         {
             "title": doc.get("title", "Untitled"),
@@ -96,6 +110,7 @@ async def chat(req: ChatRequest):
         for doc in retrieved
     ]
 
+    # fallback source
     if not sources:
         sources = [
             {
